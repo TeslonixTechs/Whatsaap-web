@@ -37,7 +37,7 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
     
     try {
       // 1. Initialize the connection on the local server
-      const initResponse = await fetch(`${WHATSAPP_API_BASE}/init`, {
+      const initResponse = await fetch(`${WHATSAPP_API_BASE}/api/whatsapp/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assistantId }),
@@ -45,12 +45,12 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
 
       if (!initResponse.ok) {
         let errorMessage = "Failed to initialize WhatsApp connection.";
+        const errorText = await initResponse.text();
         try {
-          const errorData = await initResponse.json();
+          const errorData = JSON.parse(errorText);
           errorMessage = errorData.error || errorMessage;
         } catch (jsonError) {
-          // If response is not JSON, get it as plain text
-          errorMessage = await initResponse.text();
+          errorMessage = errorText;
         }
         throw new Error(errorMessage);
       }
@@ -63,7 +63,7 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
       // 2. Start polling for the QR code and connection status
       const pollInterval = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`${WHATSAPP_API_BASE}/status/${assistantId}`);
+          const statusResponse = await fetch(`${WHATSAPP_API_BASE}/api/whatsapp/status/${assistantId}`);
           if (!statusResponse.ok) return; // Silently fail and retry
 
           const statusData = await statusResponse.json();
@@ -128,7 +128,7 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   const handleDisconnect = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${WHATSAPP_API_BASE}/disconnect`, {
+      const response = await fetch(`${WHATSAPP_API_BASE}/api/whatsapp/disconnect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assistantId }),
@@ -136,11 +136,12 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
       
       if (!response.ok) {
         let errorMessage = "Failed to disconnect.";
+        const errorText = await response.text();
         try {
-          const errorData = await response.json();
+          const errorData = JSON.parse(errorText);
           errorMessage = errorData.error || errorMessage;
         } catch (jsonError) {
-          errorMessage = await response.text();
+          errorMessage = errorText;
         }
         throw new Error(errorMessage);
       }
@@ -166,7 +167,7 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   
   const handleRefreshStatus = async () => {
      try {
-      const statusResponse = await fetch(`${WHATSAPP_API_BASE}/status/${assistantId}`);
+      const statusResponse = await fetch(`${WHATSAPP_API_BASE}/api/whatsapp/status/${assistantId}`);
       if (!statusResponse.ok) return;
 
       const statusData = await statusResponse.json();
