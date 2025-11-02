@@ -14,7 +14,7 @@ interface WhatsAppConnectionProps {
 }
 
 // Define the base URL for your local WhatsApp server
-const WHATSAPP_API_BASE = "https://whatsaap-web.onrender.com";
+const WHATSAPP_API_BASE = "https://whatsaap-web-1.onrender.com";
 
 const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   const [phoneNumber, setPhoneNumber] = useState("");
