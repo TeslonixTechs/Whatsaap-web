@@ -13,6 +13,9 @@ interface WhatsAppConnectionProps {
   assistantId: string;
 }
 
+// Define the base URL for your local WhatsApp server
+const WHATSAPP_API_BASE = "https://whatsaap-web.onrender.com";
+
 const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [isConnected, setIsConnected] = useState(false);
@@ -20,232 +23,103 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'number' | 'qr' | 'connected'>('number');
   const [lastStatus, setLastStatus] = useState<any>(null);
-  const [refreshTick, setRefreshTick] = useState(0);
   const { toast } = useToast();
-  const functionsBase = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
   useEffect(() => {
-    loadConnection();
+    // Check initial status when the component mounts
+    handleRefreshStatus();
   }, [assistantId]);
 
-  useEffect(() => {
-    if (step === 'qr' && !isConnected) {
-      const id = setInterval(() => setRefreshTick((t) => t + 1), 3000);
-      return () => clearInterval(id);
-    }
-  }, [step, isConnected]);
-
-  const loadConnection = async () => {
-    try {
-      const { data } = await supabase
-        .from("assistants")
-        .select("phone_number, whatsapp_session_data")
-        .eq("id", assistantId)
-        .single();
-
-      if (data?.phone_number) {
-        setPhoneNumber(data.phone_number);
-        const connected = !!data.whatsapp_session_data;
-        setIsConnected(connected);
-        setStep(connected ? 'connected' : 'number');
-      }
-    } catch (error) {
-      console.error("Error loading connection:", error);
-    }
-  };
-
   const handleContinue = async () => {
-    if (!phoneNumber) {
-      toast({
-        title: "Error",
-        description: "Ingresa un número de WhatsApp",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
-    if (!phoneRegex.test(phoneNumber.replace(/\s/g, ''))) {
-      toast({
-        title: "Formato inválido",
-        description: "Usa el formato internacional: +34612345678",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setLoading(true);
+    setQrCode("");
+    setStep('qr');
+    
     try {
-      // Guardar número en DB
-      const { error } = await supabase
-        .from("assistants")
-        .update({ phone_number: phoneNumber.replace(/\s/g, '') })
-        .eq("id", assistantId);
+      // 1. Initialize the connection on the local server
+      const initResponse = await fetch(`${WHATSAPP_API_BASE}/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assistantId }),
+      });
 
-      if (error) throw error;
-
-      // Iniciar sesión WhatsApp en servidor (invoke) con fallback directo
-      const { data: initData, error: initError } = await supabase.functions.invoke(
-        'whatsapp-connect',
-        { 
-          body: { assistantId, action: 'init' }
-        }
-      );
-
-      let initOk = !initError;
-      let initPayload: any = initData;
-
-      if (initError) {
-        console.warn('invoke init error, trying direct init:', initError);
+      if (!initResponse.ok) {
+        let errorMessage = "Failed to initialize WhatsApp connection.";
         try {
-          const bases = ['https://tamariki.es', 'https://www.tamariki.es'];
-          let directResp: Response | null = null;
-          for (const base of bases) {
-            try {
-              const r = await fetch(`${base}/api/whatsapp/init`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ assistantId })
-              });
-              if (r.ok) { directResp = r; break; }
-            } catch {}
-          }
-          if (!directResp) throw new Error('Init directo falló en todas las URLs');
-          initOk = true;
-          initPayload = await directResp.json().catch(() => ({}));
-        } catch (e) {
-          console.error('direct init error:', e);
+          const errorData = await initResponse.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (jsonError) {
+          // If response is not JSON, get it as plain text
+          errorMessage = await initResponse.text();
         }
+        throw new Error(errorMessage);
       }
 
-      if (!initOk) {
-        throw initError || new Error('No se pudo iniciar la sesión de WhatsApp');
-      }
+      toast({
+        title: "Generating QR Code",
+        description: "Please wait a moment...",
+      });
 
-      console.log('WhatsApp init response:', initPayload);
-      
-      // Si la respuesta inicial ya trae el QR, mostrarlo
-      if (initPayload?.qr || initPayload?.qrCode) {
-        const rawQr = initPayload.qr || initPayload.qrCode;
-        const normalized = typeof rawQr === 'string' && rawQr.startsWith('data:')
-          ? rawQr
-          : `data:image/png;base64,${rawQr}`;
-        setQrCode(normalized);
-        setStep('qr');
-        toast({
-          title: 'QR Generado',
-          description: 'Escanea el código con WhatsApp',
-        });
-      } else {
-        setStep('qr');
-        toast({
-          title: 'Generando QR',
-          description: 'Espera mientras se genera el código QR...',
-        });
-      }
-
-      // Consulta inmediata de estado para acelerar la aparición del QR
-      try {
-        const { data: firstStatus } = await supabase.functions.invoke(
-          'whatsapp-connect',
-          { body: { assistantId, action: 'status' } }
-        );
-        if (firstStatus) {
-          setLastStatus(firstStatus);
-          const rawQr = firstStatus.qr || firstStatus.qrCode;
-          if (rawQr) {
-            const normalized = typeof rawQr === 'string' && rawQr.startsWith('data:')
-              ? rawQr
-              : `data:image/png;base64,${rawQr}`;
-            setQrCode(normalized);
-          }
-        }
-      } catch (e) {
-        console.error('Estado inmediato error:', e);
-      }
-
-      // Fallback directo tras 5s (evita estados obsoletos de React)
-      setTimeout(() => {
-        fetchDirectStatus();
-      }, 5000);
-
-      // Polling para obtener QR y verificar conexión
+      // 2. Start polling for the QR code and connection status
       const pollInterval = setInterval(async () => {
         try {
-          const { data: statusData, error: statusError } = await supabase.functions.invoke(
-            'whatsapp-connect',
-            { 
-              body: { assistantId, action: 'status' }
-            }
-          );
+          const statusResponse = await fetch(`${WHATSAPP_API_BASE}/status/${assistantId}`);
+          if (!statusResponse.ok) return; // Silently fail and retry
 
-          if (statusError) {
-            console.error('Error obteniendo estado:', statusError);
-            return;
-          }
-
-          console.log('Estado WhatsApp:', statusData);
+          const statusData = await statusResponse.json();
           setLastStatus(statusData);
+          console.log('WhatsApp Status:', statusData);
 
-          // Si hay QR, mostrarlo (puede venir como qr o qrCode)
-          const rawQr = statusData.qr || statusData.qrCode;
-          if (rawQr) {
-            const normalized = typeof rawQr === 'string' && rawQr.startsWith('data:')
-              ? rawQr
-              : `data:image/png;base64,${rawQr}`;
-            const wasEmpty = !qrCode;
-            setQrCode(normalized);
-            if (wasEmpty) {
-              toast({
-                title: 'QR Generado',
-                description: 'Escanea el código con WhatsApp',
-              });
-            }
-          } else if (statusData?.debug?.qrExists || statusData?.qrCode || statusData?.qr) {
-            // Si el edge indica que existe, pero no lo entrega, forzamos estado directo
-            await fetchDirectStatus();
+          // If QR code is available, display it
+          if (statusData.qrCode) {
+            setQrCode(statusData.qrCode);
+            if (step !== 'qr') setStep('qr');
           }
 
-          // Si está conectado (ready), actualizar UI
-          if (statusData.status === 'ready') {
+          // If connected, update UI and stop polling
+          if (statusData.status === 'ready' || statusData.status === 'authenticated') {
             clearInterval(pollInterval);
             setIsConnected(true);
             setStep('connected');
-            setQrCode(''); // Limpiar QR
+            setQrCode(""); // Clear QR
             toast({
-              title: "¡Conectado!",
-              description: "WhatsApp Business Web está activo",
+              title: "Success!",
+              description: "WhatsApp Business is now connected.",
             });
+          }
+          
+          // Handle other statuses if necessary (e.g., timeout, error)
+          if (statusData.status === 'disconnected' || statusData.status === 'auth_failure') {
+             clearInterval(pollInterval);
+             setStep('number');
+             toast({
+                title: "Disconnected",
+                description: "The session has ended. Please try again.",
+                variant: "destructive",
+             });
           }
 
-          // Si se desconectó, reintentar
-          if (statusData.status === 'disconnected' && qrCode) {
-            clearInterval(pollInterval);
-            setQrCode('');
-            setStep('number');
-            toast({
-              title: "Desconectado",
-              description: "La sesión expiró. Intenta de nuevo.",
-              variant: "destructive",
-            });
-          }
-        } catch (e) {
-          console.error('Error en polling:', e);
+        } catch (pollError) {
+          console.error("Polling error:", pollError);
         }
-      }, 2000);
+      }, 3000); // Poll every 3 seconds
 
-      // Limpiar polling después de 5 minutos
+      // Clear polling after 2 minutes to prevent infinite loops
       setTimeout(() => {
         clearInterval(pollInterval);
-      }, 300000);
-      
+        if (!isConnected) {
+            console.log("Polling timed out.");
+        }
+      }, 120000);
+
     } catch (error: any) {
-      console.error('Error en handleContinue:', error);
+      console.error('Error in handleContinue:', error);
       toast({
         title: "Error",
-        description: error.message || 'Error conectando WhatsApp',
+        description: error.message || "Failed to connect WhatsApp.",
         variant: "destructive",
       });
+      setStep('number');
     } finally {
       setLoading(false);
     }
@@ -254,105 +128,63 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
   const handleDisconnect = async () => {
     setLoading(true);
     try {
-      // Llamar al edge function para desconectar del servidor Node
-      const { error } = await supabase.functions.invoke(
-        'whatsapp-connect',
-        { 
-          body: { assistantId, action: 'disconnect' }
+      const response = await fetch(`${WHATSAPP_API_BASE}/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assistantId }),
+      });
+      
+      if (!response.ok) {
+        let errorMessage = "Failed to disconnect.";
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (jsonError) {
+          errorMessage = await response.text();
         }
-      );
-
-      if (error) throw error;
+        throw new Error(errorMessage);
+      }
 
       setIsConnected(false);
       setQrCode("");
       setStep('number');
       toast({
-        title: "Desconectado",
-        description: "WhatsApp ha sido desvinculado",
+        title: "Disconnected",
+        description: "WhatsApp has been successfully unlinked.",
       });
     } catch (error: any) {
-      console.error('Error desconectando:', error);
+      console.error('Error disconnecting:', error);
       toast({
         title: "Error",
-        description: error.message || 'Error desconectando WhatsApp',
+        description: error.message || "Could not disconnect WhatsApp.",
         variant: "destructive",
       });
     } finally {
       setLoading(false);
     }
   };
+  
+  const handleRefreshStatus = async () => {
+     try {
+      const statusResponse = await fetch(`${WHATSAPP_API_BASE}/status/${assistantId}`);
+      if (!statusResponse.ok) return;
 
-  const fetchDirectStatus = async () => {
-    try {
-      const bases = ['https://tamariki.es', 'https://www.tamariki.es'];
-      let resp: Response | null = null;
-      for (const base of bases) {
-        try {
-          const r = await fetch(`${base}/api/whatsapp/status/${assistantId}`);
-          if (r.ok) { resp = r; break; }
-        } catch {}
-      }
-      if (!resp) throw new Error('Status directo falló en todas las URLs');
-      const json = await resp.json();
-      setLastStatus(json);
-      const rawQr = json.qr || json.qrCode;
-      if (rawQr) {
-        const normalized = typeof rawQr === 'string' && rawQr.startsWith('data:')
-          ? rawQr
-          : `data:image/png;base64,${rawQr}`;
-        setQrCode(normalized);
+      const statusData = await statusResponse.json();
+      setLastStatus(statusData);
+
+      const connected = statusData.status === 'ready' || statusData.status === 'authenticated';
+      setIsConnected(connected);
+      setStep(connected ? 'connected' : step === 'qr' ? 'qr' : 'number');
+      
+      if (statusData.qrCode) {
+        setQrCode(statusData.qrCode);
         setStep('qr');
       }
-      if (json.status === 'ready') {
-        setIsConnected(true);
-        setStep('connected');
-        setQrCode('');
-      }
-    } catch (e) {
-      console.error('Fallback status error:', e);
-      toast({
-        title: 'Error fallback',
-        description: 'No se pudo consultar el estado directo',
-        variant: 'destructive'
-      });
-    }
-  };
 
-  const handleRefreshStatus = async () => {
-    try {
-      const { data: statusData, error: statusError } = await supabase.functions.invoke(
-        'whatsapp-connect',
-        { body: { assistantId, action: 'status' } }
-      );
-      if (statusError) throw statusError;
-      setLastStatus(statusData);
-      const rawQr = statusData.qr || statusData.qrCode;
-      if (rawQr) {
-        const normalized = typeof rawQr === 'string' && rawQr.startsWith('data:')
-          ? rawQr
-          : `data:image/png;base64,${rawQr}`;
-        setQrCode(normalized);
-      }
-      if (statusData.status === 'ready') {
-        setIsConnected(true);
-        setStep('connected');
-        setQrCode('');
-      }
-
-      // Fallback directo si seguimos sin QR
-      if (!rawQr && statusData?.debug?.qrExists) {
-        await fetchDirectStatus();
-      }
-    } catch (e: any) {
-      console.error('Error refrescando estado:', e);
-      toast({
-        title: 'Error',
-        description: e.message || 'No se pudo refrescar el estado',
-        variant: 'destructive'
-      });
-    }
-  };
+     } catch (e) {
+        console.error("Error refreshing status:", e);
+     }
+  }
 
   return (
     <Card className="p-6 max-w-xl mx-auto">
@@ -364,237 +196,112 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
           <div>
             <h3 className="text-lg font-semibold">WhatsApp Business</h3>
             <p className="text-sm text-muted-foreground">
-              Conexión en 2 pasos
+              Connect your local WhatsApp server
             </p>
           </div>
         </div>
         {isConnected ? (
           <Badge className="bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400">
             <CheckCircle2 className="w-3 h-3 mr-1" />
-            Conectado
+            Connected
           </Badge>
         ) : (
           <Badge variant="secondary">
             <AlertCircle className="w-3 h-3 mr-1" />
-            Sin conectar
+            Not Connected
           </Badge>
         )}
       </div>
 
       <div className="space-y-6">
-        {/* Paso 1: Número */}
         {step === 'number' && (
           <div className="space-y-4">
             <div>
               <Label htmlFor="whatsapp-number" className="text-base font-semibold">
-                Paso 1: Número de WhatsApp
+                Step 1: Start Connection
               </Label>
               <p className="text-sm text-muted-foreground mt-1 mb-3">
-                Ingresa el número con formato internacional
+                Click the button to generate a QR code from your local server.
               </p>
-              <div className="relative">
-                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  id="whatsapp-number"
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="+34 612 345 678"
-                  className="pl-10 text-base"
-                  disabled={loading}
-                />
-              </div>
             </div>
-            
             <Button 
               onClick={handleContinue} 
-              disabled={loading || !phoneNumber}
+              disabled={loading}
               className="w-full"
               size="lg"
             >
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Generando QR...
+                  Initializing...
                 </>
               ) : (
-                "Continuar →"
+                "Connect to WhatsApp →"
               )}
             </Button>
-
-            <div className="flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                disabled={loading || !assistantId}
-                onClick={async () => {
-                  try {
-                    setStep('qr');
-                    const bases = ['https://tamariki.es', 'https://www.tamariki.es'];
-                    let ok = false;
-                    for (const base of bases) {
-                      try {
-                        const r = await fetch(`${base}/api/whatsapp/init`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ assistantId })
-                        });
-                        if (r.ok) { ok = true; break; }
-                      } catch {}
-                    }
-                    if (!ok) throw new Error('No se pudo iniciar sesión en ninguna URL');
-                    setTimeout(() => { handleRefreshStatus(); }, 1500);
-                  } catch (e: any) {
-                    console.error('direct init (number step) error:', e);
-                    toast({ title: 'Error', description: e.message || 'Fallo iniciando directo', variant: 'destructive' });
-                  }
-                }}
-              >
-                Forzar estado directo
-              </Button>
-            </div>
           </div>
         )}
 
-        {/* Paso 2: QR Code */}
         {step === 'qr' && (
           <div className="space-y-4">
-            <div>
+             <div>
               <Label className="text-base font-semibold">
-                Paso 2: Escanea el código QR
+                Step 2: Scan the QR Code
               </Label>
               <p className="text-sm text-muted-foreground mt-1">
-                Abre WhatsApp en tu móvil y escanea este código
+                Open WhatsApp on your phone and scan the code below.
               </p>
             </div>
-
-            <Alert className="bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-800">
-              <AlertDescription className="text-sm text-blue-900 dark:text-blue-100">
-                <ol className="space-y-1 list-decimal list-inside">
-                  <li>Abre WhatsApp en tu móvil</li>
-                  <li>Ve a Ajustes → Dispositivos vinculados</li>
-                  <li>Toca "Vincular un dispositivo"</li>
-                  <li>Escanea este código QR</li>
-                </ol>
-              </AlertDescription>
-            </Alert>
             
             <div className="bg-white dark:bg-muted p-6 rounded-lg border-2 border-dashed flex flex-col items-center justify-center min-h-[320px]">
               {qrCode ? (
                 <>
                   <img 
                     src={qrCode} 
-                    alt="QR Code WhatsApp" 
+                    alt="WhatsApp QR Code" 
                     className="w-64 h-64 rounded-lg"
                   />
-                  <div className="mt-3">
-                    <a
-                      href={qrCode}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm underline text-muted-foreground"
-                    >
-                      Abrir imagen QR en nueva pestaña
-                    </a>
-                  </div>
                   <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Esperando escaneo...
+                    Waiting for scan...
                   </div>
                 </>
               ) : (
                 <div className="flex flex-col items-center gap-3">
                   <Loader2 className="w-12 h-12 animate-spin text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Generando código QR...</p>
+                  <p className="text-sm text-muted-foreground">Generating QR code...</p>
                 </div>
               )}
             </div>
-
-            <div className="bg-muted/40 rounded-lg border p-4">
-              <p className="text-sm text-muted-foreground mb-2">
-                Visor alternativo embebido (si no ves el QR arriba, se mostrará aquí):
-              </p>
-              <iframe
-                src={`https://tamariki.es/api/whatsapp/debug-qr/${assistantId}`}
-                title="QR Debug"
-                className="w-full rounded-md border"
-                style={{ height: '360px' }}
-              />
-            </div>
-
-            <div className="bg-muted/40 rounded-lg border p-4">
-              <p className="text-sm text-muted-foreground mb-2">
-                Visor proxy fiable (sirve la imagen directamente desde nuestro backend):
-              </p>
-              <div className="flex items-center justify-center">
-                <img
-                  src={`${functionsBase}/whatsapp-qr?assistantId=${assistantId}&_=${refreshTick}`}
-                  alt="QR (proxy)"
-                  className="w-64 h-64 rounded-md border"
-                />
-              </div>
-              <p className="text-xs text-center text-muted-foreground mt-2">
-                Se actualiza automáticamente cada 3s. Si no aparece, pulsa "Refrescar ahora".
-              </p>
-            </div>
-
-            {lastStatus?.status && (
-              <p className="text-xs text-muted-foreground">
-                Estado actual: {lastStatus.status}
-                {lastStatus?.debug?.qrLength ? ` · QR bytes: ${lastStatus.debug.qrLength}` : ''}
-              </p>
-            )}
-
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
+            
+             <div className="flex items-center justify-between gap-3">
                 <Button 
                   variant="secondary"
                   onClick={handleRefreshStatus}
                   disabled={loading}
                 >
-                  Refrescar ahora
+                  Refresh Status
                 </Button>
-                <Button 
-                  variant="outline"
-                  onClick={fetchDirectStatus}
+                 <Button
+                  variant="outline" 
+                  onClick={() => { setStep('number'); setQrCode(""); }}
                   disabled={loading}
                 >
-                  Forzar estado directo
+                  Cancel
                 </Button>
-              </div>
-              <a
-                href={`https://tamariki.es/api/whatsapp/debug-qr/${assistantId}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm underline text-muted-foreground"
-              >
-                Abrir visor QR (debug)
-              </a>
-            </div>
-
-            <Button 
-              variant="outline" 
-              onClick={() => { setStep('number'); setQrCode(""); }}
-              disabled={loading}
-              className="w-full"
-            >
-              Volver
-            </Button>
+             </div>
           </div>
         )}
 
-        {/* Estado conectado */}
         {step === 'connected' && isConnected && (
           <div className="space-y-4">
             <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-lg p-6 text-center">
               <CheckCircle2 className="w-16 h-16 text-green-600 dark:text-green-400 mx-auto mb-4" />
               <h4 className="font-semibold text-lg text-green-900 dark:text-green-100 mb-2">
-                ¡WhatsApp conectado!
+                WhatsApp Connected!
               </h4>
-              <p className="text-green-700 dark:text-green-300 mb-1">
-                {phoneNumber}
-              </p>
-              <p className="text-sm text-green-600 dark:text-green-400">
-                Tu asistente ya puede recibir y enviar mensajes
+               <p className="text-sm text-green-600 dark:text-green-400">
+                Your assistant is now ready to send and receive messages.
               </p>
             </div>
             
@@ -607,10 +314,10 @@ const WhatsAppConnection = ({ assistantId }: WhatsAppConnectionProps) => {
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Desconectando...
+                  Disconnecting...
                 </>
               ) : (
-                "Desvincular WhatsApp"
+                "Unlink WhatsApp"
               )}
             </Button>
           </div>

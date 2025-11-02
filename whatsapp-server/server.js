@@ -65,30 +65,27 @@ async function generateAndStoreQR(assistantId, qrData) {
 }
 
 // =========================================================
-// 🔹 ENDPOINT: Inicializar conexión y obtener QR
+// 🔹 ENDPOINT: Inicializar conexión y obtener QR (NON-BLOCKING)
 // =========================================================
-app.post('/api/whatsapp/init', async (req, res) => {
+app.post('/api/whatsapp/init', async (req, res, next) => {
   try {
     const { assistantId } = req.body;
     if (!assistantId) {
       return res.status(400).json({ error: 'assistantId requerido' });
     }
 
-    console.log(`\n=== [${assistantId}] INICIANDO CONEXIÓN WHATSAPP ===`);
+    console.log(`
+=== [${assistantId}] INICIANDO CONEXIÓN WHATSAPP ===`);
 
-    // Si ya hay cliente, destruirlo
     if (clients.has(assistantId)) {
       console.log(`[${assistantId}] Cliente existente encontrado, destruyendo...`);
       const oldClient = clients.get(assistantId);
-      await oldClient.destroy().catch(() => {});
+      await oldClient.destroy().catch((err) => console.error(`[${assistantId}] Error destroying old client:`, err));
       clients.delete(assistantId);
       qrCodes.delete(assistantId);
     }
 
-    // Ruta del archivo de sesión
     const sessionFile = path.join(SESSIONS_DIR, `${assistantId}.json`);
-
-    // Verificar si existe sesión guardada
     let sessionData = null;
     if (fs.existsSync(sessionFile)) {
       try {
@@ -100,7 +97,6 @@ app.post('/api/whatsapp/init', async (req, res) => {
       }
     }
 
-    // Crear nuevo cliente con LegacySessionAuth
     const client = new Client({
       authStrategy: new LegacySessionAuth({
         session: sessionData,
@@ -120,24 +116,19 @@ app.post('/api/whatsapp/init', async (req, res) => {
       }
     });
 
-    // === EVENTOS DEL CLIENTE ===
     let qrGenerated = false;
-
     client.on('qr', async (qr) => {
       if (qrGenerated) {
         console.log(`[${assistantId}] QR regenerado (ignorando duplicado)`);
         return;
       }
-      
       qrGenerated = true;
-      console.log(`[${assistantId}] QR recibido (raw): ${qr.substring(0, 30)}...`);
-      
+      console.log(`[${assistantId}] QR recibido: ${qr.substring(0, 30)}...`);
       await generateAndStoreQR(assistantId, qr);
     });
 
     client.on('authenticated', (session) => {
       console.log(`[${assistantId}] ✅ Autenticado`);
-      // Guardar sesión
       try {
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2));
         console.log(`[${assistantId}] Sesión guardada en: ${sessionFile}`);
@@ -156,10 +147,7 @@ app.post('/api/whatsapp/init', async (req, res) => {
 
     client.on('auth_failure', (msg) => {
       console.error(`[${assistantId}] ❌ Error de autenticación:`, msg);
-      // Eliminar sesión corrupta
-      if (fs.existsSync(sessionFile)) {
-        fs.unlinkSync(sessionFile);
-      }
+      if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
       connectionStatus.set(assistantId, 'auth_failure');
       qrCodes.delete(assistantId);
       qrGenerated = false;
@@ -167,31 +155,23 @@ app.post('/api/whatsapp/init', async (req, res) => {
 
     client.on('disconnected', (reason) => {
       console.log(`[${assistantId}] 🔌 Desconectado:`, reason);
-      // Eliminar sesión
-      if (fs.existsSync(sessionFile)) {
-        fs.unlinkSync(sessionFile);
-      }
+      if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
       connectionStatus.set(assistantId, 'disconnected');
       clients.delete(assistantId);
       qrCodes.delete(assistantId);
       qrGenerated = false;
     });
 
-    // Guardar cliente y estado
     clients.set(assistantId, client);
     connectionStatus.set(assistantId, 'initializing');
 
-    try {
-      await client.initialize();
-      console.log(`[${assistantId}] ✅ Cliente inicializado`);
-    } catch (error) {
-      console.error(`[${assistantId}] ❌ Error inicializando:`, error);
-      connectionStatus.set(assistantId, 'error');
-      return res.status(500).json({
-        error: 'Error inicializando WhatsApp: ' + error.message
-      });
-    }
+    // KEY CHANGE: Initialize in the background (fire-and-forget)
+    client.initialize().catch(error => {
+        console.error(`[${assistantId}] ❌ Error inicializando en background:`, error);
+        connectionStatus.set(assistantId, 'init_error');
+    });
 
+    // KEY CHANGE: Respond to the frontend immediately
     res.json({
       status: 'initializing',
       message: 'Cliente WhatsApp inicializando. Espera el QR.',
@@ -199,23 +179,21 @@ app.post('/api/whatsapp/init', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error en /init:', error);
-    res.status(500).json({ 
-      error: 'Error en servidor: ' + error.message 
-    });
+    next(error);
   }
 });
 
 // =========================================================
 // 🔹 ENDPOINT: Estado y QR actual (MEJORADO)
 // =========================================================
-app.get('/api/whatsapp/status/:assistantId', (req, res) => {
+app.get('/api/whatsapp/status/:assistantId', (req, res, next) => {
   try {
     const { assistantId } = req.params;
     const status = connectionStatus.get(assistantId) || 'disconnected';
     const qr = qrCodes.get(assistantId);
     
-    console.log(`\n[${assistantId}] 📊 CONSULTANDO ESTADO:`);
+    console.log(`
+[${assistantId}] 📊 CONSULTANDO ESTADO:`);
     console.log(`[${assistantId}] Estado: ${status}`);
     console.log(`[${assistantId}] Tiene QR: ${!!qr}`);
     console.log(`[${assistantId}] Tiene cliente: ${clients.has(assistantId)}`);
@@ -237,16 +215,12 @@ app.get('/api/whatsapp/status/:assistantId', (req, res) => {
       }
     };
     
-    console.log(`[${assistantId}] 📤 Enviando respuesta al frontend`);
+    console.log(`[${assistantId}] 📤 Enviando respuesta al frontend:`, JSON.stringify(response, null, 2));
     
     res.json(response);
     
   } catch (error) {
-    console.error('❌ Error en /status:', error);
-    res.status(500).json({ 
-      error: error.message,
-      debug: 'Error en endpoint status'
-    });
+    next(error);
   }
 });
 
@@ -258,7 +232,8 @@ app.get('/api/whatsapp/debug-qr/:assistantId', (req, res) => {
   const qr = qrCodes.get(assistantId);
   const status = connectionStatus.get(assistantId);
   
-  console.log(`\n[${assistantId}] 🔍 DEBUG QR SOLICITADO:`);
+  console.log(`
+[${assistantId}] 🔍 DEBUG QR SOLICITADO:`);
   console.log(`[${assistantId}] Estado: ${status}`);
   console.log(`[${assistantId}] QR en memoria: ${!!qr}`);
   console.log(`[${assistantId}] Cliente activo: ${clients.has(assistantId)}`);
@@ -316,7 +291,7 @@ app.get('/api/whatsapp/debug-qr/:assistantId', (req, res) => {
 // =========================================================
 // 🔹 ENDPOINT: Desconectar sesión
 // =========================================================
-app.post('/api/whatsapp/disconnect', async (req, res) => {
+app.post('/api/whatsapp/disconnect', async (req, res, next) => {
   try {
     const { assistantId } = req.body;
     if (!assistantId) {
@@ -332,7 +307,6 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
       qrCodes.delete(assistantId);
       connectionStatus.delete(assistantId);
       
-      // Eliminar archivo de sesión
       const sessionFile = path.join(SESSIONS_DIR, `${assistantId}.json`);
       if (fs.existsSync(sessionFile)) {
         fs.unlinkSync(sessionFile);
@@ -346,8 +320,7 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
       message: 'WhatsApp desconectado correctamente'
     });
   } catch (error) {
-    console.error('❌ Error en /disconnect:', error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
@@ -393,13 +366,28 @@ app.get('/api/whatsapp/sessions', (req, res) => {
 });
 
 // =========================================================
+// 🔹 GLOBAL ERROR HANDLER
+// =========================================================
+app.use((err, req, res, next) => {
+  console.error('❌ GLOBAL ERROR HANDLER:', err);
+  res.status(500).json({
+    error: 'Error en el servidor',
+    message: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
+
+
+// =========================================================
 // 🔹 INICIAR SERVIDOR
 // =========================================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 WhatsApp Server escuchando en puerto ${PORT}`);
+  console.log(`
+🚀 WhatsApp Server escuchando en puerto ${PORT}`);
   console.log(`📁 Sesiones guardadas en: ${SESSIONS_DIR}`);
   console.log(`🔍 Debug QR disponible en: http://localhost:${PORT}/api/whatsapp/debug-qr/:assistantId`);
   console.log(`📊 Sesiones activas: http://localhost:${PORT}/api/whatsapp/sessions`);
-  console.log(`❤️  Health check: http://localhost:${PORT}/health\n`);
+  console.log(`❤️  Health check: http://localhost:${PORT}/health
+`);
 });
