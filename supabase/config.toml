@@ -1,0 +1,10 @@
+project_id = "uyfrsblfraptsweqrfqv"
+
+[functions.generate-faqs]
+verify_jwt = true
+
+[functions.ai-assistant-config]
+verify_jwt = true
+
+[functions.whatsapp-qr]
+verify_jwt = false
