@@ -32,34 +32,33 @@ const connectionStatus = new Map();
 async function generateAndStoreQR(assistantId, qrData) {
   try {
     console.log(`[${assistantId}] Generando QR Data URL...`);
-    
-    // Generar QR como data URL
-    const qrImage = await qrcode.toDataURL(qrData);
-    
+
+    // Opciones para un QR más robusto
+    const qrOptions = {
+      errorCorrectionLevel: 'H', // Alta corrección de errores
+      type: 'image/webp',       // Formato moderno y eficiente
+      rendererOpts: {
+        quality: 0.9,         // Buena calidad de imagen
+      },
+      margin: 1,                // Margen pequeño
+    };
+
+    const qrImage = await qrcode.toDataURL(qrData, qrOptions);
+
     console.log(`[${assistantId}] QR generado exitosamente`);
     console.log(`[${assistantId}] Longitud del QR: ${qrImage.length} caracteres`);
     console.log(`[${assistantId}] Prefijo QR: ${qrImage.substring(0, 50)}...`);
-    
-    // Guardar en el mapa
+
     qrCodes.set(assistantId, qrImage);
     connectionStatus.set(assistantId, 'qr_ready');
-    
+
     console.log(`[${assistantId}] QR almacenado en memoria`);
     return true;
-    
+
   } catch (error) {
-    console.error(`[${assistantId}] Error generando QR:`, error);
-    
-    // Fallback: crear QR simple
-    const fallbackQR = `data:image/svg+xml;base64,${Buffer.from(`
-      <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
-        <rect width="100%" height="100%" fill="white"/>
-        <text x="50%" y="50%" text-anchor="middle" dy=".3em">QR Error</text>
-      </svg>
-    `).toString('base64')}`;
-    
-    qrCodes.set(assistantId, fallbackQR);
-    connectionStatus.set(assistantId, 'qr_ready');
+    console.error(`[${assistantId}] Error crítico generando QR:`, error);
+    connectionStatus.set(assistantId, 'qr_error');
+    // No establecer un QR de fallback para que el frontend sepa que falló
     return false;
   }
 }
@@ -147,7 +146,7 @@ app.post('/api/whatsapp/init', async (req, res, next) => {
 
     client.on('auth_failure', (msg) => {
       console.error(`[${assistantId}] ❌ Error de autenticación:`, msg);
-      if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
+      // NO BORRAR LA SESIÓN: if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
       connectionStatus.set(assistantId, 'auth_failure');
       qrCodes.delete(assistantId);
       qrGenerated = false;
@@ -155,7 +154,7 @@ app.post('/api/whatsapp/init', async (req, res, next) => {
 
     client.on('disconnected', (reason) => {
       console.log(`[${assistantId}] 🔌 Desconectado:`, reason);
-      if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
+      // NO BORRAR LA SESIÓN: if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
       connectionStatus.set(assistantId, 'disconnected');
       clients.delete(assistantId);
       qrCodes.delete(assistantId);
