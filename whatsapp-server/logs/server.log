@@ -1,0 +1,7 @@
+[2025-11-02T20:37:11.775Z] [INFO] ================================================
+[2025-11-02T20:37:11.799Z] [INFO] 🚀 INICIANDO WHATSAPP SERVER...
+[2025-11-02T20:37:11.799Z] [INFO] ================================================
+[2025-11-02T20:37:11.824Z] [INFO] 🚀 WhatsApp Server escuchando en puerto 3001
+[2025-11-02T20:37:11.824Z] [INFO] 📁 Sesiones guardadas en: /home/user/my-wa-helper-main/whatsapp-server/sessions
+[2025-11-02T20:37:11.824Z] [INFO] 📝 Logs guardados en: /home/user/my-wa-helper-main/whatsapp-server/logs/server.log
+[2025-11-02T20:37:11.825Z] [INFO] ❤️  Health check: http://localhost:3001/health
