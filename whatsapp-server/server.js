@@ -65,6 +65,9 @@ function initializeWhatsAppClient(assistantId) {
         '--disable-gpu'
       ],
     },
+    webVersionCache: {
+      type: 'none'
+    }
   });
 
   clients.set(assistantId, client);
